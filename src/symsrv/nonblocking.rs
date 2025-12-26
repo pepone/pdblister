@@ -9,7 +9,7 @@ extern crate indicatif;
 extern crate reqwest;
 extern crate tokio;
 
-use crate::{DownloadError, DownloadStatus, SymFileInfo, SymSrvSpec};
+use super::{DownloadError, DownloadStatus, SymFileInfo, SymSrvSpec, is_two_tier, two_tier_prefix};
 
 use anyhow::Context;
 use indicatif::{MultiProgress, ProgressBar};
@@ -49,9 +49,16 @@ async fn download_single(
     mp: Option<&MultiProgress>,
     name: &str,
     hash: &str,
+    use_two_tier: bool,
 ) -> Result<(DownloadStatus, PathBuf), DownloadError> {
-    // e.g: "ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
-    let file_rel_folder = format!("{}/{}", name, hash);
+    // Build the relative folder path, optionally with two-tier prefix.
+    // Single-tier: "ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
+    // Two-tier:    "nt/ntkrnlmp.pdb/32C1A669D5FFEFD41091F636CFDB6E991"
+    let file_rel_folder = if use_two_tier {
+        format!("{}/{}/{}", two_tier_prefix(name), name, hash)
+    } else {
+        format!("{}/{}", name, hash)
+    };
 
     // The name of the file on the local filesystem
     let file_name = srv.cache_path.join(&file_rel_folder).join(name);
@@ -306,10 +313,25 @@ impl SymSrv {
     /// Attempt to find a single file in the symbol store associated with this context.
     ///
     /// If the file is found, its cache path will be returned.
+    /// This method checks both single-tier and two-tier structures.
     pub fn find_file(&self, name: &str, info: &SymFileInfo) -> Option<PathBuf> {
         let hash = info.to_string();
 
-        // The file should be in each cache directory under the following path:
+        // Check two-tier structure first if index2.txt exists:
+        // "<cache_dir>/<prefix>/<name>/<hash>/<name>"
+        if is_two_tier(&self.spec.cache_path) {
+            let path = PathBuf::from(&self.spec.cache_path)
+                .join(two_tier_prefix(name))
+                .join(name)
+                .join(&hash)
+                .join(name);
+
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        // Fall back to single-tier structure:
         // "<cache_dir>/<name>/<hash>/<name>"
         let path = PathBuf::from(&self.spec.cache_path)
             .join(name)
@@ -321,20 +343,27 @@ impl SymSrv {
 
     /// Download and cache a single file in the symbol store associated with this context,
     /// and then return its path on the local system.
+    ///
+    /// If the cache uses a two-tier structure (indicated by `index2.txt`), the file
+    /// will be stored with the two-tier path format.
     pub async fn download_file(
         &self,
         name: &str,
         info: &SymFileInfo,
     ) -> Result<PathBuf, DownloadError> {
         let hash = info.to_string();
+        let use_two_tier = is_two_tier(&self.spec.cache_path);
 
-        download_single(&self.client, &self.spec, None, name, &hash)
+        download_single(&self.client, &self.spec, None, name, &hash, use_two_tier)
             .await
             .map(|r| r.1)
     }
 
     /// Download (displaying progress) and cache a single file in the symbol store associated with this context,
     /// and then return its path on the local system.
+    ///
+    /// If the cache uses a two-tier structure (indicated by `index2.txt`), the file
+    /// will be stored with the two-tier path format.
     pub async fn download_file_progress(
         &self,
         name: &str,
@@ -342,8 +371,9 @@ impl SymSrv {
         mp: &MultiProgress,
     ) -> Result<PathBuf, DownloadError> {
         let hash = info.to_string();
+        let use_two_tier = is_two_tier(&self.spec.cache_path);
 
-        download_single(&self.client, &self.spec, Some(mp), name, &hash)
+        download_single(&self.client, &self.spec, Some(mp), name, &hash, use_two_tier)
             .await
             .map(|r| r.1)
     }

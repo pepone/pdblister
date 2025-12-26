@@ -29,3 +29,6 @@ zerocopy = "0.6"
 [dependencies.tokio]
 version = "1.38.2"
 features = ["full"]
+
+[dev-dependencies]
+tempfile = "3"

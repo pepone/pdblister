@@ -80,6 +80,29 @@ pub struct SymSrvSpec {
     pub cache_path: PathBuf,
 }
 
+/// Determines if a symbol store uses a two-tier directory structure.
+///
+/// A two-tier structure is indicated by the presence of an `index2.txt` file
+/// in the root of the symbol store. In this structure, files are organized
+/// by the first two characters of the filename:
+/// - Single-tier: `<cache>/ntdll.pdb/<hash>/ntdll.pdb`
+/// - Two-tier: `<cache>/nt/ntdll.pdb/<hash>/ntdll.pdb`
+///
+/// Reference: https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/symbol-store-folder-tree
+pub fn is_two_tier(cache_path: &std::path::Path) -> bool {
+    cache_path.join("index2.txt").exists()
+}
+
+/// Returns the two-tier prefix for a filename (first two characters, lowercase).
+///
+/// For filenames shorter than 2 characters, returns the filename itself.
+pub fn two_tier_prefix(name: &str) -> String {
+    name.chars()
+        .take(2)
+        .collect::<String>()
+        .to_lowercase()
+}
+
 impl FromStr for SymSrvSpec {
     type Err = anyhow::Error;
 
@@ -166,5 +189,38 @@ mod test {
                 cache_path: "C:\\Symbols".into(),
             }
         );
+    }
+
+    #[test]
+    fn test_two_tier_prefix() {
+        // Normal filenames
+        assert_eq!(two_tier_prefix("ntdll.pdb"), "nt");
+        assert_eq!(two_tier_prefix("kernel32.pdb"), "ke");
+        assert_eq!(two_tier_prefix("NTDLL.PDB"), "nt"); // Should be lowercase
+        assert_eq!(two_tier_prefix("Kernel32.dll"), "ke");
+        
+        // Edge cases - first two characters regardless of filename structure
+        assert_eq!(two_tier_prefix("a.pdb"), "a."); // Only 1 char before dot, takes 'a.'
+        assert_eq!(two_tier_prefix("ab"), "ab");
+        assert_eq!(two_tier_prefix("a"), "a");
+        assert_eq!(two_tier_prefix(""), "");
+    }
+
+    #[test]
+    fn test_is_two_tier() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        // Create a temporary directory for testing
+        let temp_dir = tempdir().expect("failed to create temp dir");
+
+        // Without index2.txt, should be single-tier
+        assert!(!is_two_tier(temp_dir.path()));
+
+        // Create index2.txt
+        fs::write(temp_dir.path().join("index2.txt"), "").expect("failed to create index2.txt");
+
+        // With index2.txt, should be two-tier
+        assert!(is_two_tier(temp_dir.path()));
     }
 }
